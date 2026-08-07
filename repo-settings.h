@@ -56,6 +56,7 @@ struct repo_settings {
 	enum untracked_cache_setting core_untracked_cache;
 
 	int pack_use_sparse;
+	int pack_use_path_walk;
 	enum fetch_negotiation_setting fetch_negotiation_algorithm;
 
 	int core_multi_pack_index;
@@ -65,6 +66,8 @@ struct repo_settings {
 	size_t packed_git_window_size;
 	size_t packed_git_limit;
 	unsigned long big_file_threshold;
+
+	int max_allowed_tree_depth;
 
 	char *hooks_path;
 };
@@ -77,6 +80,7 @@ struct repo_settings {
 	.delta_base_cache_limit = DEFAULT_DELTA_BASE_CACHE_LIMIT, \
 	.packed_git_window_size = DEFAULT_PACKED_GIT_WINDOW_SIZE, \
 	.packed_git_limit = DEFAULT_PACKED_GIT_LIMIT, \
+	.max_allowed_tree_depth = DEFAULT_MAX_ALLOWED_TREE_DEPTH, \
 }
 
 void prepare_repo_settings(struct repository *r);

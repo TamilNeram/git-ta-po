@@ -4,22 +4,33 @@
 #define _FILE_OFFSET_BITS 64
 
 /*
- * Derived from Linux "Features Test Macro" header
- * Convenience macros to test the versions of gcc (or
- * a compatible compiler).
+ * Convenience macros to test the versions of GCC (or a compatible compiler).
  * Use them like this:
  *  #if GIT_GNUC_PREREQ (2,8)
- *   ... code requiring gcc 2.8 or later ...
+ *   ... code requiring GCC 2.8 or later ...
  *  #endif
+ *
+ * Note that Clang and other compilers define __GNUC__ for compatibility; use
+ * GIT_CLANG_PREREQ() to check for specific Clang versions.
  *
  * This macro of course is not part of POSIX, but we need it for the UNUSED
  * macro which is used by some of our POSIX compatibility wrappers.
-*/
+ */
 #if defined(__GNUC__) && defined(__GNUC_MINOR__)
 # define GIT_GNUC_PREREQ(maj, min) \
-	((__GNUC__ << 16) + __GNUC_MINOR__ >= ((maj) << 16) + (min))
+	((__GNUC__ > (maj)) || \
+	 (__GNUC__ == (maj) && __GNUC_MINOR__ >= (min)))
 #else
- #define GIT_GNUC_PREREQ(maj, min) 0
+# define GIT_GNUC_PREREQ(maj, min) 0
+#endif
+
+/* Similar for Clang. */
+#if defined(__clang__) && defined(__clang_minor__) && defined(__clang_major__)
+# define GIT_CLANG_PREREQ(maj, min) \
+	((__clang_major__ > (maj)) || \
+	 (__clang_major__ == (maj) && __clang_minor__ >= (min)))
+#else
+# define GIT_CLANG_PREREQ(maj, min) 0
 #endif
 
 /*
@@ -35,17 +46,17 @@
  * When a parameter may be used or unused, depending on conditional
  * compilation, consider using MAYBE_UNUSED instead.
  */
-#if GIT_GNUC_PREREQ(4, 5)
-#define UNUSED __attribute__((unused)) \
-	__attribute__((deprecated ("parameter declared as UNUSED")))
+#if GIT_GNUC_PREREQ(4, 5) || GIT_CLANG_PREREQ(2, 9)
+# define UNUSED __attribute__((unused)) \
+	__attribute__((deprecated("parameter declared as UNUSED")))
 #elif defined(__GNUC__)
-#define UNUSED __attribute__((unused)) \
+# define UNUSED __attribute__((unused)) \
 	__attribute__((deprecated))
 #else
-#define UNUSED
+# define UNUSED
 #endif
 
-#ifdef __MINGW64__
+#if defined(__MINGW32__) || defined(__MINGW64__)
 #define _POSIX_C_SOURCE 1
 #elif defined(__sun__)
  /*
@@ -60,11 +71,11 @@
 # else
 # define _XOPEN_SOURCE 500
 # endif
-#elif !defined(__APPLE__) && !defined(__FreeBSD__) && !defined(__USLC__) && \
-      !defined(_M_UNIX) && !defined(__sgi) && !defined(__DragonFly__) && \
-      !defined(__TANDEM) && !defined(__QNX__) && !defined(__MirBSD__) && \
-      !defined(__CYGWIN__)
-#define _XOPEN_SOURCE 600 /* glibc2 and AIX 5.3L need 500, OpenBSD needs 600 for S_ISLNK() */
+#elif !defined(__APPLE__) && !defined(__FreeBSD__) && !defined(__NetBSD__) && \
+      !defined(__OpenBSD__) && !defined(__DragonFly__) && !defined(__MirBSD__) && \
+      !defined(__USLC__) && !defined(_M_UNIX) && !defined(__sgi) && \
+      !defined(__TANDEM) && !defined(__QNX__) && !defined(__CYGWIN__)
+#define _XOPEN_SOURCE 600 /* glibc2 and AIX 5.3L need 500 */
 #define _XOPEN_SOURCE_EXTENDED 1 /* AIX 5.3L needs this */
 #endif
 #define _ALL_SOURCE 1
@@ -76,7 +87,7 @@
 
 #if defined(WIN32) && !defined(__CYGWIN__) /* Both MinGW and MSVC */
 # if !defined(_WIN32_WINNT)
-#  define _WIN32_WINNT 0x0600
+#  define _WIN32_WINNT 0x0603
 # endif
 #define WIN32_LEAN_AND_MEAN  /* stops windows.h including winsock.h */
 #include <winsock2.h>
@@ -329,8 +340,7 @@ int gitsetenv(const char *, const char *, int);
 #endif
 
 #ifdef NO_MKDTEMP
-#define mkdtemp gitmkdtemp
-char *gitmkdtemp(char *);
+#define mkdtemp git_mkdtemp
 #endif
 
 #ifdef NO_UNSETENV

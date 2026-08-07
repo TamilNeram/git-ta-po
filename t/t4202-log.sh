@@ -134,6 +134,12 @@ test_expect_success 'diff-filter=D' '
 
 '
 
+test_expect_success 'all-negative filter' '
+	git log --no-renames --format=%s --diff-filter=d HEAD >actual &&
+	printf "%s\n" fifth fourth third second initial >expect &&
+	test_cmp expect actual
+'
+
 test_expect_success 'diff-filter=R' '
 
 	git log -M --pretty="format:%s" --diff-filter=R HEAD >actual &&
@@ -486,10 +492,16 @@ test_expect_success !FAIL_PREREQS 'log with various grep.patternType configurati
 	)
 '
 
-for cmd in show whatchanged reflog format-patch
+cmds="show reflog format-patch"
+if test_have_prereq !WITH_BREAKING_CHANGES
+then
+	cmds="$cmds whatchanged"
+fi
+for cmd in $cmds
 do
 	case "$cmd" in
 	format-patch) myarg="HEAD~.." ;;
+	whatchanged) myarg=--i-still-use-this ;;
 	*) myarg= ;;
 	esac
 
@@ -1201,20 +1213,27 @@ test_expect_success 'reflog is expected format' '
 	test_cmp expect actual
 '
 
-test_expect_success 'whatchanged is expected format' '
+test_expect_success !WITH_BREAKING_CHANGES 'whatchanged is expected format' '
+	whatchanged="whatchanged --i-still-use-this" &&
 	git log --no-merges --raw >expect &&
-	git whatchanged >actual &&
+	git $whatchanged >actual &&
 	test_cmp expect actual
 '
 
 test_expect_success 'log.abbrevCommit configuration' '
+	whatchanged="whatchanged --i-still-use-this" &&
+
 	git log --abbrev-commit >expect.log.abbrev &&
 	git log --no-abbrev-commit >expect.log.full &&
 	git log --pretty=raw >expect.log.raw &&
 	git reflog --abbrev-commit >expect.reflog.abbrev &&
 	git reflog --no-abbrev-commit >expect.reflog.full &&
-	git whatchanged --abbrev-commit >expect.whatchanged.abbrev &&
-	git whatchanged --no-abbrev-commit >expect.whatchanged.full &&
+
+	if test_have_prereq !WITH_BREAKING_CHANGES
+	then
+		git $whatchanged --abbrev-commit >expect.whatchanged.abbrev &&
+		git $whatchanged --no-abbrev-commit >expect.whatchanged.full
+	fi &&
 
 	test_config log.abbrevCommit true &&
 
@@ -1231,10 +1250,13 @@ test_expect_success 'log.abbrevCommit configuration' '
 	git reflog --no-abbrev-commit >actual &&
 	test_cmp expect.reflog.full actual &&
 
-	git whatchanged >actual &&
-	test_cmp expect.whatchanged.abbrev actual &&
-	git whatchanged --no-abbrev-commit >actual &&
-	test_cmp expect.whatchanged.full actual
+	if test_have_prereq !WITH_BREAKING_CHANGES
+	then
+		git $whatchanged >actual &&
+		test_cmp expect.whatchanged.abbrev actual &&
+		git $whatchanged --no-abbrev-commit >actual &&
+		test_cmp expect.whatchanged.full actual
+	fi
 '
 
 test_expect_success '--abbrev-commit with core.abbrev=false' '
@@ -1858,6 +1880,46 @@ EOF
 
 test_expect_success 'log --graph with --name-status' '
 	test_cmp_graph --name-status tangle..reach
+'
+
+test_expect_success 'log --max-count-oldest=3 --oneline' '
+	test_when_finished rm expect &&
+	git log --oneline | tail -n3 >expect &&
+	git log --oneline --max-count-oldest=3 >actual &&
+	test_cmp expect actual
+'
+
+test_expect_success 'log --max-count-oldest=3 --reverse --oneline' '
+	test_when_finished rm expect &&
+	git log --oneline --reverse | head -n3 >expect &&
+	git log --oneline --max-count-oldest=3 --reverse >actual &&
+	test_cmp expect actual
+'
+
+test_expect_success 'log --max-count-oldest with --max-count' '
+	test_when_finished rm stderr &&
+	test_must_fail git log --max-count-oldest=3 --max-count=3 2>stderr &&
+	test_grep "cannot be used together" stderr
+'
+
+test_expect_success 'log --max-count-oldest with --skip' '
+	test_when_finished rm stderr &&
+	test_must_fail git log --max-count-oldest=3 --skip=1 2>stderr &&
+	test_grep "cannot be used together" stderr
+'
+
+test_expect_success 'log --max-count-oldest=1000 --graph --boundary' '
+	test_when_finished rm expect actual &&
+	git log --graph --boundary >expect &&
+	git log --max-count-oldest=1000 --graph --boundary >actual &&
+	test_cmp expect actual
+'
+
+test_expect_success 'log --oneline --graph --boundary --max-count-oldest=1' '
+	test_when_finished rm -f actual &&
+	git log --oneline --graph --boundary --max-count-oldest=1 \
+		HEAD~1..HEAD >actual &&
+	test_line_count = 2 actual
 '
 
 cat >expect <<-\EOF

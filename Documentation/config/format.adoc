@@ -68,9 +68,15 @@ format.encodeEmailHeaders::
 	Defaults to true.
 
 format.pretty::
+ifndef::with-breaking-changes[]
 	The default pretty format for log/show/whatchanged command.
 	See linkgit:git-log[1], linkgit:git-show[1],
 	linkgit:git-whatchanged[1].
+endif::with-breaking-changes[]
+ifdef::with-breaking-changes[]
+	The default pretty format for log/show command.
+	See linkgit:git-log[1], linkgit:git-show[1].
+endif::with-breaking-changes[]
 
 format.thread::
 	The default threading style for 'git format-patch'.  Can be
@@ -94,6 +100,11 @@ format.coverLetter::
 	format-patch is invoked, but in addition can be set to "auto", to
 	generate a cover-letter only when there's more than one patch.
 	Default is false.
+
+format.commitListFormat::
+	When the `--commit-list-format` option is not given, `format-patch`
+	uses the value of this variable to decide how to format the entry of
+	each commit. Defaults to `shortlog`.
 
 format.outputDirectory::
 	Set a custom directory to store the resulting files instead of the

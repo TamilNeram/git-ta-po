@@ -8,7 +8,6 @@
 #define DISABLE_SIGN_COMPARE_WARNINGS
 
 #include "builtin.h"
-#include "bulk-checkin.h"
 #include "config.h"
 #include "environment.h"
 #include "gettext.h"
@@ -19,6 +18,8 @@
 #include "cache-tree.h"
 #include "tree-walk.h"
 #include "object-file.h"
+#include "odb.h"
+#include "odb/transaction.h"
 #include "refs.h"
 #include "resolve-undo.h"
 #include "parse-options.h"
@@ -70,14 +71,6 @@ static void report(const char *fmt, ...)
 	if (!verbose)
 		return;
 
-	/*
-	 * It is possible, though unlikely, that a caller could use the verbose
-	 * output to synchronize with addition of objects to the object
-	 * database. The current implementation of ODB transactions leaves
-	 * objects invisible while a transaction is active, so flush the
-	 * transaction here before reporting a change made by update-index.
-	 */
-	flush_odb_transaction();
 	va_start(vp, fmt);
 	vprintf(fmt, vp);
 	putchar('\n');
@@ -663,7 +656,7 @@ static int do_unresolve(int ac, const char **av,
 
 	for (i = 1; i < ac; i++) {
 		const char *arg = av[i];
-		char *p = prefix_path(prefix, prefix_length, arg);
+		char *p = prefix_path(the_repository, prefix, prefix_length, arg);
 		err |= unresolve_one(p);
 		free(p);
 	}
@@ -740,7 +733,7 @@ struct refresh_params {
 
 static int refresh(struct refresh_params *o, unsigned int flag)
 {
-	setup_work_tree();
+	setup_work_tree(the_repository);
 	repo_read_index(the_repository);
 	*o->has_errors |= refresh_index(the_repository->index, o->flags | flag, NULL,
 					NULL, NULL);
@@ -909,7 +902,7 @@ static enum parse_opt_result reupdate_callback(
 	BUG_ON_OPT_ARG(arg);
 
 	/* consume remaining arguments. */
-	setup_work_tree();
+	setup_work_tree(the_repository);
 	*has_errors = do_reupdate(ctx->argv + 1, prefix);
 	if (*has_errors)
 		the_repository->index->cache_changed = 0;
@@ -940,6 +933,7 @@ int cmd_update_index(int argc,
 	strbuf_getline_fn getline_fn;
 	int parseopt_state = PARSE_OPT_UNKNOWN;
 	struct repository *r = the_repository;
+	struct odb_transaction *transaction;
 	struct option options[] = {
 		OPT_BIT('q', NULL, &refresh_args.flags,
 			N_("continue refresh even when index needs update"),
@@ -981,6 +975,7 @@ int cmd_update_index(int argc,
 			.type = OPTION_SET_INT,
 			.long_name = "assume-unchanged",
 			.value = &mark_valid_only,
+			.precision = sizeof(mark_valid_only),
 			.help = N_("mark files as \"not changing\""),
 			.flags = PARSE_OPT_NOARG | PARSE_OPT_NONEG,
 			.defval = MARK_FLAG,
@@ -989,6 +984,7 @@ int cmd_update_index(int argc,
 			.type = OPTION_SET_INT,
 			.long_name = "no-assume-unchanged",
 			.value = &mark_valid_only,
+			.precision = sizeof(mark_valid_only),
 			.help = N_("clear assumed-unchanged bit"),
 			.flags = PARSE_OPT_NOARG | PARSE_OPT_NONEG,
 			.defval = UNMARK_FLAG,
@@ -997,6 +993,7 @@ int cmd_update_index(int argc,
 			.type = OPTION_SET_INT,
 			.long_name = "skip-worktree",
 			.value = &mark_skip_worktree_only,
+			.precision = sizeof(mark_skip_worktree_only),
 			.help = N_("mark files as \"index-only\""),
 			.flags = PARSE_OPT_NOARG | PARSE_OPT_NONEG,
 			.defval = MARK_FLAG,
@@ -1005,6 +1002,7 @@ int cmd_update_index(int argc,
 			.type = OPTION_SET_INT,
 			.long_name = "no-skip-worktree",
 			.value = &mark_skip_worktree_only,
+			.precision = sizeof(mark_skip_worktree_only),
 			.help = N_("clear skip-worktree bit"),
 			.flags = PARSE_OPT_NOARG | PARSE_OPT_NONEG,
 			.defval = UNMARK_FLAG,
@@ -1079,6 +1077,7 @@ int cmd_update_index(int argc,
 			.type = OPTION_SET_INT,
 			.long_name = "fsmonitor-valid",
 			.value = &mark_fsmonitor_only,
+			.precision = sizeof(mark_fsmonitor_only),
 			.help = N_("mark files as fsmonitor valid"),
 			.flags = PARSE_OPT_NOARG | PARSE_OPT_NONEG,
 			.defval = MARK_FLAG,
@@ -1087,6 +1086,7 @@ int cmd_update_index(int argc,
 			.type = OPTION_SET_INT,
 			.long_name = "no-fsmonitor-valid",
 			.value = &mark_fsmonitor_only,
+			.precision = sizeof(mark_fsmonitor_only),
 			.help = N_("clear fsmonitor valid bit"),
 			.flags = PARSE_OPT_NOARG | PARSE_OPT_NONEG,
 			.defval = UNMARK_FLAG,
@@ -1097,7 +1097,7 @@ int cmd_update_index(int argc,
 	show_usage_with_options_if_asked(argc, argv,
 					 update_index_usage, options);
 
-	git_config(git_default_config, NULL);
+	repo_config(the_repository, git_default_config, NULL);
 
 	prepare_repo_settings(r);
 	the_repository->settings.command_requires_full_index = 0;
@@ -1124,7 +1124,7 @@ int cmd_update_index(int argc,
 	 * Allow the object layer to optimize adding multiple objects in
 	 * a batch.
 	 */
-	begin_odb_transaction();
+	transaction = odb_transaction_begin(the_repository->objects);
 	while (ctx.argc) {
 		if (parseopt_state != PARSE_OPT_DONE)
 			parseopt_state = parse_options_step(&ctx, options,
@@ -1143,8 +1143,23 @@ int cmd_update_index(int argc,
 			const char *path = ctx.argv[0];
 			char *p;
 
-			setup_work_tree();
-			p = prefix_path(prefix, prefix_length, path);
+			/*
+			 * It is possible, though unlikely, that a caller could
+			 * use the verbose output to synchronize with addition
+			 * of objects to the object database. The current
+			 * implementation of ODB transactions leaves objects
+			 * invisible while a transaction is active, so end the
+			 * transaction here early before processing the next
+			 * update. All further updates are performed outside of
+			 * a transaction.
+			 */
+			if (transaction && verbose) {
+				odb_transaction_commit(transaction);
+				transaction = NULL;
+			}
+
+			setup_work_tree(the_repository);
+			p = prefix_path(the_repository, prefix, prefix_length, path);
 			update_one(p);
 			if (set_executable_bit)
 				chmod_path(set_executable_bit, p);
@@ -1185,7 +1200,7 @@ int cmd_update_index(int argc,
 		struct strbuf buf = STRBUF_INIT;
 		struct strbuf unquoted = STRBUF_INIT;
 
-		setup_work_tree();
+		setup_work_tree(the_repository);
 		while (getline_fn(&buf, stdin) != EOF) {
 			char *p;
 			if (!nul_term_line && buf.buf[0] == '"') {
@@ -1194,7 +1209,7 @@ int cmd_update_index(int argc,
 					die("line is badly quoted");
 				strbuf_swap(&buf, &unquoted);
 			}
-			p = prefix_path(prefix, prefix_length, buf.buf);
+			p = prefix_path(the_repository, prefix, prefix_length, buf.buf);
 			update_one(p);
 			if (set_executable_bit)
 				chmod_path(set_executable_bit, p);
@@ -1207,7 +1222,7 @@ int cmd_update_index(int argc,
 	/*
 	 * By now we have added all of the new objects
 	 */
-	end_odb_transaction();
+	odb_transaction_commit(transaction);
 
 	if (split_index > 0) {
 		if (repo_config_get_split_index(the_repository) == 0)
@@ -1239,7 +1254,7 @@ int cmd_update_index(int argc,
 		report(_("Untracked cache disabled"));
 		break;
 	case UC_TEST:
-		setup_work_tree();
+		setup_work_tree(the_repository);
 		return !test_if_untracked_cache_is_supported();
 	case UC_ENABLE:
 	case UC_FORCE:

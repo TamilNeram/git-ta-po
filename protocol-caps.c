@@ -4,9 +4,8 @@
 #include "hex.h"
 #include "pkt-line.h"
 #include "hash.h"
-#include "hex.h"
 #include "object.h"
-#include "object-store.h"
+#include "odb.h"
 #include "repository.h"
 #include "string-list.h"
 #include "strbuf.h"
@@ -51,7 +50,7 @@ static void send_info(struct repository *r, struct packet_writer *writer,
 	for_each_string_list_item (item, oid_str_list) {
 		const char *oid_str = item->string;
 		struct object_id oid;
-		unsigned long object_size;
+		size_t object_size;
 
 		if (get_oid_hex_algop(oid_str, &oid, r->hash_algo) < 0) {
 			packet_writer_error(
@@ -64,10 +63,11 @@ static void send_info(struct repository *r, struct packet_writer *writer,
 		strbuf_addstr(&send_buffer, oid_str);
 
 		if (info->size) {
-			if (oid_object_info(r, &oid, &object_size) < 0) {
+			if (odb_read_object_info(r->objects, &oid, &object_size) < 0) {
 				strbuf_addstr(&send_buffer, " ");
 			} else {
-				strbuf_addf(&send_buffer, " %lu", object_size);
+				strbuf_addf(&send_buffer, " %"PRIuMAX,
+					    (uintmax_t)object_size);
 			}
 		}
 

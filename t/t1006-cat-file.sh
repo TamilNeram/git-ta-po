@@ -113,53 +113,55 @@ strlen () {
 
 run_tests () {
     type=$1
-    oid=$2
-    size=$3
-    content=$4
-    pretty_content=$5
+    object_name="$2"
+    mode=$3
+    size=$4
+    content=$5
+    pretty_content=$6
+    oid=${7:-"$object_name"}
 
     batch_output="$oid $type $size
 $content"
 
     test_expect_success "$type exists" '
-	git cat-file -e $oid
+	git cat-file -e "$object_name"
     '
 
     test_expect_success "Type of $type is correct" '
 	echo $type >expect &&
-	git cat-file -t $oid >actual &&
+	git cat-file -t "$object_name" >actual &&
 	test_cmp expect actual
     '
 
     test_expect_success "Size of $type is correct" '
 	echo $size >expect &&
-	git cat-file -s $oid >actual &&
+	git cat-file -s "$object_name" >actual &&
 	test_cmp expect actual
     '
 
     test -z "$content" ||
     test_expect_success "Content of $type is correct" '
 	echo_without_newline "$content" >expect &&
-	git cat-file $type $oid >actual &&
+	git cat-file $type "$object_name" >actual &&
 	test_cmp expect actual
     '
 
     test_expect_success "Pretty content of $type is correct" '
 	echo_without_newline "$pretty_content" >expect &&
-	git cat-file -p $oid >actual &&
+	git cat-file -p "$object_name" >actual &&
 	test_cmp expect actual
     '
 
     test -z "$content" ||
     test_expect_success "--batch output of $type is correct" '
 	echo "$batch_output" >expect &&
-	echo $oid | git cat-file --batch >actual &&
+	echo "$object_name" | git cat-file --batch >actual &&
 	test_cmp expect actual
     '
 
     test_expect_success "--batch-check output of $type is correct" '
 	echo "$oid $type $size" >expect &&
-	echo_without_newline $oid | git cat-file --batch-check >actual &&
+	echo_without_newline "$object_name" | git cat-file --batch-check >actual &&
 	test_cmp expect actual
     '
 
@@ -168,13 +170,13 @@ $content"
 	test -z "$content" ||
 		test_expect_success "--batch-command $opt output of $type content is correct" '
 		echo "$batch_output" >expect &&
-		test_write_lines "contents $oid" | git cat-file --batch-command $opt >actual &&
+		test_write_lines "contents $object_name" | git cat-file --batch-command $opt >actual &&
 		test_cmp expect actual
 	'
 
 	test_expect_success "--batch-command $opt output of $type info is correct" '
 		echo "$oid $type $size" >expect &&
-		test_write_lines "info $oid" |
+		test_write_lines "info $object_name" |
 		git cat-file --batch-command $opt >actual &&
 		test_cmp expect actual
 	'
@@ -182,20 +184,35 @@ $content"
 
     test_expect_success "custom --batch-check format" '
 	echo "$type $oid" >expect &&
-	echo $oid | git cat-file --batch-check="%(objecttype) %(objectname)" >actual &&
+	echo "$object_name" | git cat-file --batch-check="%(objecttype) %(objectname)" >actual &&
 	test_cmp expect actual
     '
 
     test_expect_success "custom --batch-command format" '
 	echo "$type $oid" >expect &&
-	echo "info $oid" | git cat-file --batch-command="%(objecttype) %(objectname)" >actual &&
+	echo "info $object_name" | git cat-file --batch-command="%(objecttype) %(objectname)" >actual &&
 	test_cmp expect actual
     '
 
-    test_expect_success '--batch-check with %(rest)' '
+    # FIXME: %(rest) is incompatible with object names that include whitespace,
+    # e.g. HEAD:path/to/a/file with spaces. Use the resolved OID as input to
+    # test this instead of the raw object name.
+    if echo "$object_name" | grep -q " "; then
+	test_rest=test_expect_failure
+    else
+	test_rest=test_expect_success
+    fi
+
+    $test_rest '--batch-check with %(rest)' '
 	echo "$type this is some extra content" >expect &&
-	echo "$oid    this is some extra content" |
+	echo "$object_name    this is some extra content" |
 		git cat-file --batch-check="%(objecttype) %(rest)" >actual &&
+	test_cmp expect actual
+    '
+
+    test_expect_success '--batch-check with %(objectmode)' '
+	echo "$mode $oid" >expect &&
+	echo $object_name | git cat-file --batch-check="%(objectmode) %(objectname)" >actual &&
 	test_cmp expect actual
     '
 
@@ -205,7 +222,7 @@ $content"
 		echo "$size" &&
 		echo "$content"
 	} >expect &&
-	echo $oid | git cat-file --batch="%(objectsize)" >actual &&
+	echo "$object_name" | git cat-file --batch="%(objectsize)" >actual &&
 	test_cmp expect actual
     '
 
@@ -215,7 +232,7 @@ $content"
 		echo "$type" &&
 		echo "$content"
 	} >expect &&
-	echo $oid | git cat-file --batch="%(objecttype)" >actual &&
+	echo "$object_name" | git cat-file --batch="%(objecttype)" >actual &&
 	test_cmp expect actual
     '
 }
@@ -224,19 +241,26 @@ hello_content="Hello World"
 hello_size=$(strlen "$hello_content")
 hello_oid=$(echo_without_newline "$hello_content" | git hash-object --stdin)
 
-test_expect_success "setup" '
+test_expect_success "setup part 1" '
 	git config core.repositoryformatversion 1 &&
-	git config extensions.objectformat $test_hash_algo &&
-	git config extensions.compatobjectformat $test_compat_hash_algo &&
+	git config extensions.objectformat $test_hash_algo
+'
+
+test_expect_success RUST 'compat setup' '
+	git config extensions.compatobjectformat $test_compat_hash_algo
+'
+
+test_expect_success 'setup part 2' '
 	echo_without_newline "$hello_content" > hello &&
 	git update-index --add hello &&
+	echo_without_newline "$hello_content" > "path with spaces" &&
+	git update-index --add --chmod=+x "path with spaces" &&
 	git commit -m "add hello file"
 '
 
 run_blob_tests () {
     oid=$1
-
-    run_tests 'blob' $oid $hello_size "$hello_content" "$hello_content"
+    run_tests 'blob' $oid "" $hello_size "$hello_content" "$hello_content"
 
     test_expect_success '--batch-command --buffer with flush for blob info' '
 	echo "$oid blob $hello_size" >expect &&
@@ -255,9 +279,13 @@ run_blob_tests () {
     '
 }
 
-hello_compat_oid=$(git rev-parse --output-object-format=$test_compat_hash_algo $hello_oid)
 run_blob_tests $hello_oid
-run_blob_tests $hello_compat_oid
+
+if test_have_prereq RUST
+then
+	hello_compat_oid=$(git rev-parse --output-object-format=$test_compat_hash_algo $hello_oid)
+	run_blob_tests $hello_compat_oid
+fi
 
 test_expect_success '--batch-check without %(rest) considers whole line' '
 	echo "$hello_oid blob $hello_size" >expect &&
@@ -268,58 +296,76 @@ test_expect_success '--batch-check without %(rest) considers whole line' '
 '
 
 tree_oid=$(git write-tree)
-tree_compat_oid=$(git rev-parse --output-object-format=$test_compat_hash_algo $tree_oid)
-tree_size=$(($(test_oid rawsz) + 13))
-tree_compat_size=$(($(test_oid --hash=compat rawsz) + 13))
-tree_pretty_content="100644 blob $hello_oid	hello${LF}"
-tree_compat_pretty_content="100644 blob $hello_compat_oid	hello${LF}"
+tree_size=$((2 * $(test_oid rawsz) + 13 + 24))
+tree_pretty_content="100644 blob $hello_oid	hello${LF}100755 blob $hello_oid	path with spaces${LF}"
 
-run_tests 'tree' $tree_oid $tree_size "" "$tree_pretty_content"
-run_tests 'tree' $tree_compat_oid $tree_compat_size "" "$tree_compat_pretty_content"
+run_tests 'tree' $tree_oid "" $tree_size "" "$tree_pretty_content"
+run_tests 'blob' "$tree_oid:hello" "100644" $hello_size "" "$hello_content" $hello_oid
+run_tests 'blob' "$tree_oid:path with spaces" "100755" $hello_size "" "$hello_content" $hello_oid
+
+if test_have_prereq RUST
+then
+	tree_compat_oid=$(git rev-parse --output-object-format=$test_compat_hash_algo $tree_oid)
+	tree_compat_size=$((2 * $(test_oid --hash=compat rawsz) + 13 + 24))
+	tree_compat_pretty_content="100644 blob $hello_compat_oid	hello${LF}100755 blob $hello_compat_oid	path with spaces${LF}"
+
+	run_tests 'tree' $tree_compat_oid "" $tree_compat_size "" "$tree_compat_pretty_content"
+	run_tests 'blob' "$tree_compat_oid:hello" "100644" $hello_size "" "$hello_content" $hello_compat_oid
+	run_tests 'blob' "$tree_compat_oid:path with spaces" "100755" $hello_size "" "$hello_content" $hello_compat_oid
+fi
 
 commit_message="Initial commit"
 commit_oid=$(echo_without_newline "$commit_message" | git commit-tree $tree_oid)
-commit_compat_oid=$(git rev-parse --output-object-format=$test_compat_hash_algo $commit_oid)
 commit_size=$(($(test_oid hexsz) + 137))
-commit_compat_size=$(($(test_oid --hash=compat hexsz) + 137))
 commit_content="tree $tree_oid
 author $GIT_AUTHOR_NAME <$GIT_AUTHOR_EMAIL> $GIT_AUTHOR_DATE
 committer $GIT_COMMITTER_NAME <$GIT_COMMITTER_EMAIL> $GIT_COMMITTER_DATE
 
 $commit_message"
 
-commit_compat_content="tree $tree_compat_oid
+run_tests 'commit' $commit_oid "" $commit_size "$commit_content" "$commit_content"
+
+if test_have_prereq RUST
+then
+	commit_compat_oid=$(git rev-parse --output-object-format=$test_compat_hash_algo $commit_oid)
+	commit_compat_size=$(($(test_oid --hash=compat hexsz) + 137))
+	commit_compat_content="tree $tree_compat_oid
 author $GIT_AUTHOR_NAME <$GIT_AUTHOR_EMAIL> $GIT_AUTHOR_DATE
 committer $GIT_COMMITTER_NAME <$GIT_COMMITTER_EMAIL> $GIT_COMMITTER_DATE
 
 $commit_message"
 
-run_tests 'commit' $commit_oid $commit_size "$commit_content" "$commit_content"
-run_tests 'commit' $commit_compat_oid $commit_compat_size "$commit_compat_content" "$commit_compat_content"
+	run_tests 'commit' $commit_compat_oid "" $commit_compat_size "$commit_compat_content" "$commit_compat_content"
+fi
 
 tag_header_without_oid="type blob
 tag hellotag
 tagger $GIT_COMMITTER_NAME <$GIT_COMMITTER_EMAIL>"
 tag_header_without_timestamp="object $hello_oid
 $tag_header_without_oid"
-tag_compat_header_without_timestamp="object $hello_compat_oid
-$tag_header_without_oid"
 tag_description="This is a tag"
 tag_content="$tag_header_without_timestamp 0 +0000
-
-$tag_description"
-tag_compat_content="$tag_compat_header_without_timestamp 0 +0000
 
 $tag_description"
 
 tag_oid=$(echo_without_newline "$tag_content" | git hash-object -t tag --stdin -w)
 tag_size=$(strlen "$tag_content")
 
-tag_compat_oid=$(git rev-parse --output-object-format=$test_compat_hash_algo $tag_oid)
-tag_compat_size=$(strlen "$tag_compat_content")
+run_tests 'tag' $tag_oid "" $tag_size "$tag_content" "$tag_content"
 
-run_tests 'tag' $tag_oid $tag_size "$tag_content" "$tag_content"
-run_tests 'tag' $tag_compat_oid $tag_compat_size "$tag_compat_content" "$tag_compat_content"
+if test_have_prereq RUST
+then
+	tag_compat_header_without_timestamp="object $hello_compat_oid
+$tag_header_without_oid"
+	tag_compat_content="$tag_compat_header_without_timestamp 0 +0000
+
+$tag_description"
+
+	tag_compat_oid=$(git rev-parse --output-object-format=$test_compat_hash_algo $tag_oid)
+	tag_compat_size=$(strlen "$tag_compat_content")
+
+	run_tests 'tag' $tag_compat_oid "" $tag_compat_size "$tag_compat_content" "$tag_compat_content"
+fi
 
 test_expect_success "Reach a blob from a tag pointing to it" '
 	echo_without_newline "$hello_content" >expect &&
@@ -568,7 +614,8 @@ flush"
 }
 
 batch_tests $hello_oid $tree_oid $tree_size $commit_oid $commit_size "$commit_content" $tag_oid $tag_size "$tag_content"
-batch_tests $hello_compat_oid $tree_compat_oid $tree_compat_size $commit_compat_oid $commit_compat_size "$commit_compat_content" $tag_compat_oid $tag_compat_size "$tag_compat_content"
+
+test_have_prereq RUST && batch_tests $hello_compat_oid $tree_compat_oid $tree_compat_size $commit_compat_oid $commit_compat_size "$commit_compat_content" $tag_compat_oid $tag_compat_size "$tag_compat_content"
 
 
 test_expect_success FUNNYNAMES 'setup with newline in input' '
@@ -621,7 +668,7 @@ test_expect_success 'object reference via commit text search' '
 '
 
 test_expect_success 'setup blobs which are likely to delta' '
-	test-tool genrandom foo 10240 >foo &&
+	test-tool genrandom foo 10k >foo &&
 	{ cat foo && echo plus; } >foo-plus &&
 	git add foo foo-plus &&
 	git commit -m foo &&
@@ -1026,18 +1073,28 @@ test_expect_success 'git cat-file --batch-check --follow-symlinks works for out-
 	echo .. >>expect &&
 	echo HEAD:dir/subdir/out-of-repo-link-dir | git cat-file --batch-check --follow-symlinks >actual &&
 	test_cmp expect actual &&
-	echo symlink 3 >expect &&
-	echo ../ >>expect &&
+	if test_have_prereq MINGW,SYMLINKS
+	then
+		test_write_lines "symlink 2" ..
+	else
+		test_write_lines "symlink 3" ../
+	fi >expect &&
 	echo HEAD:dir/subdir/out-of-repo-link-dir-trailing | git cat-file --batch-check --follow-symlinks >actual &&
 	test_cmp expect actual
 '
 
 test_expect_success 'git cat-file --batch-check --follow-symlinks works for symlinks with internal ..' '
-	echo HEAD: | git cat-file --batch-check >expect &&
-	echo HEAD:up-down | git cat-file --batch-check --follow-symlinks >actual &&
-	test_cmp expect actual &&
-	echo HEAD:up-down-trailing | git cat-file --batch-check --follow-symlinks >actual &&
-	test_cmp expect actual &&
+	if test_have_prereq !MINGW
+	then
+		# The `up-down` and `up-down-trailing` symlinks are normalized
+		# in MSYS in `winsymlinks` mode and are therefore in a
+		# different shape than Git expects them.
+		echo HEAD: | git cat-file --batch-check >expect &&
+		echo HEAD:up-down | git cat-file --batch-check --follow-symlinks >actual &&
+		test_cmp expect actual &&
+		echo HEAD:up-down-trailing | git cat-file --batch-check --follow-symlinks >actual &&
+		test_cmp expect actual
+	fi &&
 	echo HEAD:up-down-file | git cat-file --batch-check --follow-symlinks >actual &&
 	test_cmp found actual &&
 	echo symlink 7 >expect &&
@@ -1195,6 +1252,34 @@ test_expect_success 'cat-file --batch-check respects replace objects' '
 	$orig
 	EOF
 	echo "$orig commit $fake_size" >expect &&
+	test_cmp expect actual
+'
+
+test_expect_success 'batch-check with a submodule' '
+	# FIXME: this call to mktree is incompatible with compatObjectFormat
+	# because the submodule OID cannot be mapped to the compat hash algo.
+	test_unconfig extensions.compatobjectformat &&
+	printf "160000 commit $(test_oid deadbeef)\tsub\n" >tree-with-sub &&
+	tree=$(git mktree <tree-with-sub) &&
+	if test_have_prereq RUST
+	then
+		test_config extensions.compatobjectformat $test_compat_hash_algo
+	fi &&
+
+	git cat-file --batch-check >actual <<-EOF &&
+	$tree:sub
+	EOF
+	printf "$(test_oid deadbeef) submodule\n" >expect &&
+	test_cmp expect actual
+'
+
+test_expect_success 'batch-check with a submodule, object exists' '
+	printf "160000 commit $commit_oid\tsub\n" >tree-with-sub &&
+	tree=$(git mktree <tree-with-sub) &&
+	git cat-file --batch-check >actual <<-EOF &&
+	$tree:sub
+	EOF
+	printf "$commit_oid commit $commit_size\n" >expect &&
 	test_cmp expect actual
 '
 

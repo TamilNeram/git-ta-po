@@ -8,7 +8,6 @@
 #define DISABLE_SIGN_COMPARE_WARNINGS
 
 #include "git-compat-util.h"
-#include "bulk-checkin.h"
 #include "config.h"
 #include "date.h"
 #include "diff.h"
@@ -20,7 +19,8 @@
 #include "refs.h"
 #include "dir.h"
 #include "object-file.h"
-#include "object-store.h"
+#include "odb.h"
+#include "odb/transaction.h"
 #include "oid-array.h"
 #include "tree.h"
 #include "commit.h"
@@ -48,6 +48,9 @@
 #include "csum-file.h"
 #include "promisor-remote.h"
 #include "hook.h"
+#include "submodule.h"
+#include "submodule-config.h"
+#include "advice.h"
 
 /* Mask for the name length in ce_flags in the on-disk index */
 
@@ -247,14 +250,14 @@ static int ce_compare_link(const struct cache_entry *ce, size_t expected_size)
 {
 	int match = -1;
 	void *buffer;
-	unsigned long size;
+	size_t size;
 	enum object_type type;
 	struct strbuf sb = STRBUF_INIT;
 
 	if (strbuf_readlink(&sb, ce->name, expected_size))
 		return -1;
 
-	buffer = repo_read_object_file(the_repository, &ce->oid, &type, &size);
+	buffer = odb_read_object(the_repository->objects, &ce->oid, &type, &size);
 	if (buffer) {
 		if (size == sb.len)
 			match = memcmp(buffer, sb.buf, size);
@@ -471,6 +474,17 @@ int ie_modified(struct index_state *istate,
 	 * then we know it is.
 	 */
 	if ((changed & DATA_CHANGED) &&
+#ifdef GIT_WINDOWS_NATIVE
+	    /*
+	     * Work around Git for Windows v2.27.0 fixing a bug where symlinks'
+	     * target path lengths were not read at all, and instead recorded
+	     * as 4096: now, all symlinks would appear as modified.
+	     *
+	     * So let's just special-case symlinks with a target path length
+	     * (i.e. `sd_size`) of 4096 and force them to be re-checked.
+	     */
+	    (!S_ISLNK(st->st_mode) || ce->ce_stat_data.sd_size != MAX_PATH) &&
+#endif
 	    (S_ISGITLINK(ce->ce_mode) || ce->ce_stat_data.sd_size != 0))
 		return changed;
 
@@ -690,7 +704,7 @@ static struct cache_entry *create_alias_ce(struct index_state *istate,
 void set_object_name_for_intent_to_add_entry(struct cache_entry *ce)
 {
 	struct object_id oid;
-	if (write_object_file("", 0, OBJ_BLOB, &oid))
+	if (odb_write_object(the_repository->objects, "", 0, OBJ_BLOB, &oid))
 		die(_("cannot create an empty blob in the object database"));
 	oidcpy(&ce->oid, &oid);
 }
@@ -707,7 +721,6 @@ int add_to_index(struct index_state *istate, const char *path, struct stat *st, 
 	int add_option = (ADD_CACHE_OK_TO_ADD|ADD_CACHE_OK_TO_REPLACE|
 			  (intent_only ? ADD_CACHE_NEW_ONLY : 0));
 	unsigned hash_flags = pretend ? 0 : INDEX_WRITE_OBJECT;
-	struct object_id oid;
 
 	if (flags & ADD_CACHE_RENORMALIZE)
 		hash_flags |= INDEX_RENORMALIZE;
@@ -717,8 +730,6 @@ int add_to_index(struct index_state *istate, const char *path, struct stat *st, 
 
 	namelen = strlen(path);
 	if (S_ISDIR(st_mode)) {
-		if (repo_resolve_gitlink_ref(the_repository, path, "HEAD", &oid) < 0)
-			return error(_("'%s' does not have a commit checked out"), path);
 		while (namelen && path[namelen-1] == '/')
 			namelen--;
 	}
@@ -1456,7 +1467,8 @@ int repo_refresh_and_write_index(struct repository *repo,
 	struct lock_file lock_file = LOCK_INIT;
 	int fd, ret = 0;
 
-	fd = repo_hold_locked_index(repo, &lock_file, 0);
+	fd = repo_hold_locked_index(repo, &lock_file,
+				    gentle ? 0 : LOCK_REPORT_ON_ERROR);
 	if (!gentle && fd < 0)
 		return -1;
 	if (refresh_index(repo->index, refresh_flags, pathspec, seen, header_msg))
@@ -1806,7 +1818,7 @@ static struct cache_entry *create_from_disk(struct mem_pool *ce_mem_pool,
 
 	if (expand_name_field) {
 		const unsigned char *cp = (const unsigned char *)name;
-		size_t strip_len, previous_len;
+		uint64_t strip_len, previous_len;
 
 		/* If we're at the beginning of a block, ignore the previous name */
 		strip_len = decode_varint(&cp);
@@ -2298,13 +2310,9 @@ int do_read_index(struct index_state *istate, const char *path, int must_exist)
 	}
 	munmap((void *)mmap, mmap_size);
 
-	/*
-	 * TODO trace2: replace "the_repository" with the actual repo instance
-	 * that is associated with the given "istate".
-	 */
-	trace2_data_intmax("index", the_repository, "read/version",
+	trace2_data_intmax("index", istate->repo, "read/version",
 			   istate->version);
-	trace2_data_intmax("index", the_repository, "read/cache_nr",
+	trace2_data_intmax("index", istate->repo, "read/cache_nr",
 			   istate->cache_nr);
 
 	/*
@@ -2349,16 +2357,12 @@ int read_index_from(struct index_state *istate, const char *path,
 	if (istate->initialized)
 		return istate->cache_nr;
 
-	/*
-	 * TODO trace2: replace "the_repository" with the actual repo instance
-	 * that is associated with the given "istate".
-	 */
-	trace2_region_enter_printf("index", "do_read_index", the_repository,
+	trace2_region_enter_printf("index", "do_read_index", istate->repo,
 				   "%s", path);
 	trace_performance_enter();
 	ret = do_read_index(istate, path, 0);
 	trace_performance_leave("read cache %s", path);
-	trace2_region_leave_printf("index", "do_read_index", the_repository,
+	trace2_region_leave_printf("index", "do_read_index", istate->repo,
 				   "%s", path);
 
 	split_index = istate->split_index;
@@ -2654,8 +2658,10 @@ static int ce_write_entry(struct hashfile *f, struct cache_entry *ce,
 		hashwrite(f, ce->name, len);
 		hashwrite(f, padding, align_padding_size(size, len));
 	} else {
-		int common, to_remove, prefix_size;
+		int common, to_remove;
+		uint8_t prefix_size;
 		unsigned char to_remove_vi[16];
+
 		for (common = 0;
 		     (common < previous_name->len &&
 		      ce->name[common] &&
@@ -2754,7 +2760,7 @@ static int record_eoie(void)
 {
 	int val;
 
-	if (!git_config_get_bool("index.recordendofindexentries", &val))
+	if (!repo_config_get_bool(the_repository, "index.recordendofindexentries", &val))
 		return val;
 
 	/*
@@ -2769,7 +2775,7 @@ static int record_ieot(void)
 {
 	int val;
 
-	if (!git_config_get_bool("index.recordoffsettable", &val))
+	if (!repo_config_get_bool(the_repository, "index.recordoffsettable", &val))
 		return val;
 
 	/*
@@ -3083,13 +3089,9 @@ static int do_write_index(struct index_state *istate, struct tempfile *tempfile,
 	istate->timestamp.nsec = ST_MTIME_NSEC(st);
 	trace_performance_since(start, "write index, changed mask = %x", istate->cache_changed);
 
-	/*
-	 * TODO trace2: replace "the_repository" with the actual repo instance
-	 * that is associated with the given "istate".
-	 */
-	trace2_data_intmax("index", the_repository, "write/version",
+	trace2_data_intmax("index", istate->repo, "write/version",
 			   istate->version);
-	trace2_data_intmax("index", the_repository, "write/cache_nr",
+	trace2_data_intmax("index", istate->repo, "write/cache_nr",
 			   istate->cache_nr);
 
 	ret = 0;
@@ -3131,14 +3133,10 @@ static int do_write_locked_index(struct index_state *istate,
 		return ret;
 	}
 
-	/*
-	 * TODO trace2: replace "the_repository" with the actual repo instance
-	 * that is associated with the given "istate".
-	 */
-	trace2_region_enter_printf("index", "do_write_index", the_repository,
+	trace2_region_enter_printf("index", "do_write_index", istate->repo,
 				   "%s", get_lock_file_path(lock));
 	ret = do_write_index(istate, lock->tempfile, write_extensions, flags);
-	trace2_region_leave_printf("index", "do_write_index", the_repository,
+	trace2_region_leave_printf("index", "do_write_index", istate->repo,
 				   "%s", get_lock_file_path(lock));
 
 	if (was_full)
@@ -3464,7 +3462,7 @@ void *read_blob_data_from_index(struct index_state *istate,
 				const char *path, unsigned long *size)
 {
 	int pos, len;
-	unsigned long sz;
+	size_t sz;
 	enum object_type type;
 	void *data;
 
@@ -3485,14 +3483,14 @@ void *read_blob_data_from_index(struct index_state *istate,
 	}
 	if (pos < 0)
 		return NULL;
-	data = repo_read_object_file(the_repository, &istate->cache[pos]->oid,
-				     &type, &sz);
+	data = odb_read_object(the_repository->objects, &istate->cache[pos]->oid,
+			       &type, &sz);
 	if (!data || type != OBJ_BLOB) {
 		free(data);
 		return NULL;
 	}
 	if (size)
-		*size = sz;
+		*size = cast_size_t_to_ulong(sz);
 	return data;
 }
 
@@ -3729,9 +3727,9 @@ void prefetch_cache_entries(const struct index_state *istate,
 
 		if (S_ISGITLINK(ce->ce_mode) || !must_prefetch(ce))
 			continue;
-		if (!oid_object_info_extended(the_repository, &ce->oid,
-					      NULL,
-					      OBJECT_INFO_FOR_PREFETCH))
+		if (!odb_read_object_info_extended(the_repository->objects,
+						   &ce->oid, NULL,
+						   OBJECT_INFO_FOR_PREFETCH))
 			continue;
 		oid_array_append(&to_fetch, &ce->oid);
 	}
@@ -3808,7 +3806,7 @@ void overlay_tree_on_index(struct index_state *istate,
 
 	if (repo_get_oid(the_repository, tree_name, &oid))
 		die("tree-ish %s not found.", tree_name);
-	tree = parse_tree_indirect(&oid);
+	tree = repo_parse_tree_indirect(the_repository, &oid);
 	if (!tree)
 		die("bad tree-ish %s", tree_name);
 
@@ -3879,9 +3877,12 @@ void overlay_tree_on_index(struct index_state *istate,
 
 struct update_callback_data {
 	struct index_state *index;
+	struct repository *repo;
+	struct pathspec *pathspec;
 	int include_sparse;
 	int flags;
 	int add_errors;
+	int ignored_too;
 };
 
 static int fix_unmerged_status(struct diff_filepair *p,
@@ -3905,8 +3906,68 @@ static int fix_unmerged_status(struct diff_filepair *p,
 		return DIFF_STATUS_MODIFIED;
 }
 
+static int skip_submodule(const char *path,
+						struct repository *repo,
+						struct pathspec *pathspec,
+						int ignored_too)
+{
+    struct stat st;
+    const struct submodule *sub;
+    int pathspec_matches = 0;
+    int ps_i;
+    char *norm_pathspec = NULL;
+
+    /* Only consider if path is a directory */
+    if (lstat(path, &st) || !S_ISDIR(st.st_mode))
+		return 0;
+
+    /* Check if it's a submodule with ignore=all */
+    sub = submodule_from_path(repo, null_oid(the_hash_algo), path);
+    if (!sub || !sub->name || !sub->ignore || strcmp(sub->ignore, "all"))
+		return 0;
+
+    trace_printf("ignore=all: %s\n", path);
+    trace_printf("pathspec %s\n", (pathspec && pathspec->nr)
+									? "has pathspec"
+									: "no pathspec");
+
+    /* Check if submodule path is explicitly mentioned in pathspec */
+    if (pathspec) {
+		for (ps_i = 0; ps_i < pathspec->nr; ps_i++) {
+			const char *m = pathspec->items[ps_i].match;
+			if (!m)
+				continue;
+			norm_pathspec = xstrdup(m);
+			strip_dir_trailing_slashes(norm_pathspec);
+			if (!strcmp(path, norm_pathspec)) {
+				pathspec_matches = 1;
+				FREE_AND_NULL(norm_pathspec);
+				break;
+			}
+			FREE_AND_NULL(norm_pathspec);
+		}
+    }
+
+    /* If explicitly matched and forced, allow adding */
+    if (pathspec_matches) {
+		if (ignored_too && ignored_too > 0) {
+			trace_printf("Add submodule due to --force: %s\n", path);
+			return 0;
+		} else {
+			advise_if_enabled(ADVICE_ADD_IGNORED_FILE,
+				_("Skipping submodule due to ignore=all: %s\n"
+					"Use --force if you really want to add the submodule."), path);
+			return 1;
+		}
+    }
+
+    /* No explicit pathspec match -> skip silently */
+    trace_printf("Pathspec to submodule does not match explicitly: %s\n", path);
+    return 1;
+}
+
 static void update_callback(struct diff_queue_struct *q,
-			    struct diff_options *opt UNUSED, void *cbdata)
+							struct diff_options *opt UNUSED, void *cbdata)
 {
 	int i;
 	struct update_callback_data *data = cbdata;
@@ -3916,7 +3977,7 @@ static void update_callback(struct diff_queue_struct *q,
 		const char *path = p->one->path;
 
 		if (!data->include_sparse &&
-		    !path_in_sparse_checkout(path, data->index))
+			!path_in_sparse_checkout(path, data->index))
 			continue;
 
 		switch (fix_unmerged_status(p, data)) {
@@ -3924,6 +3985,11 @@ static void update_callback(struct diff_queue_struct *q,
 			die(_("unexpected diff status %c"), p->status);
 		case DIFF_STATUS_MODIFIED:
 		case DIFF_STATUS_TYPE_CHANGED:
+			if (skip_submodule(path, data->repo,
+								data->pathspec,
+								data->ignored_too))
+				continue;
+
 			if (add_file_to_index(data->index, path, data->flags)) {
 				if (!(data->flags & ADD_CACHE_IGNORE_ERRORS))
 					die(_("updating files failed"));
@@ -3944,8 +4010,9 @@ static void update_callback(struct diff_queue_struct *q,
 
 int add_files_to_cache(struct repository *repo, const char *prefix,
 		       const struct pathspec *pathspec, char *ps_matched,
-		       int include_sparse, int flags)
+		       int include_sparse, int flags, int ignored_too )
 {
+	struct odb_transaction *transaction;
 	struct update_callback_data data;
 	struct rev_info rev;
 
@@ -3953,6 +4020,9 @@ int add_files_to_cache(struct repository *repo, const char *prefix,
 	data.index = repo->index;
 	data.include_sparse = include_sparse;
 	data.flags = flags;
+	data.repo = repo;
+	data.ignored_too = ignored_too;
+	data.pathspec = (struct pathspec *)pathspec;
 
 	repo_init_revisions(repo, &rev, prefix);
 	setup_revisions(0, NULL, &rev, NULL);
@@ -3964,6 +4034,7 @@ int add_files_to_cache(struct repository *repo, const char *prefix,
 	rev.diffopt.format_callback = update_callback;
 	rev.diffopt.format_callback_data = &data;
 	rev.diffopt.flags.override_submodule_config = 1;
+	rev.diffopt.detect_rename = 0; /* staging worktree changes does not need renames */
 	rev.max_count = 0; /* do not compare unmerged paths with stage #2 */
 
 	/*
@@ -3971,9 +4042,9 @@ int add_files_to_cache(struct repository *repo, const char *prefix,
 	 * This function is invoked from commands other than 'add', which
 	 * may not have their own transaction active.
 	 */
-	begin_odb_transaction();
+	transaction = odb_transaction_begin(repo->objects);
 	run_diff_files(&rev, DIFF_RACY_IS_MODIFIED);
-	end_odb_transaction();
+	odb_transaction_commit(transaction);
 
 	release_revisions(&rev);
 	return !!data.add_errors;

@@ -2,6 +2,7 @@
 
 #include "git-compat-util.h"
 #include "config.h"
+#include "environment.h"
 #include "gettext.h"
 #include "hex-ll.h"
 #include "utf8.h"
@@ -266,6 +267,8 @@ static void handle_content_type(struct mailinfo *mi, struct strbuf *line)
 			error("Too many boundaries to handle");
 			mi->input_error = -1;
 			mi->content_top = &mi->content[MAX_BOUNDARIES] - 1;
+			strbuf_release(boundary);
+			free(boundary);
 			return;
 		}
 		*(mi->content_top) = boundary;
@@ -467,7 +470,7 @@ static int convert_to_utf8(struct mailinfo *mi,
 		return error("cannot convert from %s to %s",
 			     charset, mi->metainfo_charset);
 	}
-	strbuf_attach(line, out, out_len, out_len);
+	strbuf_attach(line, out, out_len, out_len + 1);
 	return 0;
 }
 
@@ -1138,7 +1141,7 @@ static void output_header_lines(FILE *fout, const char *hdr, const struct strbuf
 {
 	const char *sp = data->buf;
 	while (1) {
-		char *ep = strchr(sp, '\n');
+		const char *ep = strchr(sp, '\n');
 		int len;
 		if (!ep)
 			len = strlen(sp);

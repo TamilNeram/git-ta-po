@@ -449,7 +449,27 @@ test_expect_success 'custom `gpg.program`' '
 
 	test_must_fail env LET_GPG_PROGRAM_FAIL=1 \
 	git commit -S --allow-empty -m must-fail 2>err &&
-	grep zOMG err
+	grep zOMG err &&
+
+	# `gpg.program` starts with `~`, the path should be interpreted to be relative to `$HOME`
+	test_config gpg.program "~/fake-gpg" &&
+	env HOME="$(pwd)" \
+	git commit -S --allow-empty -m signed-commit &&
+
+	# `gpg.program` does not specify an absolute path, it should find a program in `$PATH`
+	test_config gpg.program "fake-gpg" &&
+	env PATH="$PWD:$PATH" \
+	git commit -S --allow-empty -m signed-commit
+'
+
+test_expect_success GPG 'commit verifies with non-UTF-8 commit message' '
+	printf "I hate\\376\\377UTF-8\\n" >message &&
+	echo unusual-message >file &&
+	git add file &&
+	test_tick && git commit -S -F message 2>err &&
+	git verify-commit HEAD &&
+	grep "commit message did not conform to UTF-8" err >lines &&
+	test_line_count = 1 lines
 '
 
 test_done

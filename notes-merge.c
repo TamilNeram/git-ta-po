@@ -8,7 +8,7 @@
 #include "refs.h"
 #include "object-file.h"
 #include "object-name.h"
-#include "object-store.h"
+#include "odb.h"
 #include "path.h"
 #include "repository.h"
 #include "diff.h"
@@ -339,8 +339,8 @@ static void write_note_to_worktree(const struct object_id *obj,
 				   const struct object_id *note)
 {
 	enum object_type type;
-	unsigned long size;
-	void *buf = repo_read_object_file(the_repository, note, &type, &size);
+	size_t size;
+	void *buf = odb_read_object(the_repository->objects, note, &type, &size);
 
 	if (!buf)
 		die("cannot read note %s for object %s",
@@ -359,9 +359,9 @@ static int ll_merge_in_worktree(struct notes_merge_options *o,
 	mmfile_t base, local, remote;
 	enum ll_merge_result status;
 
-	read_mmblob(&base, &p->base);
-	read_mmblob(&local, &p->local);
-	read_mmblob(&remote, &p->remote);
+	read_mmblob(&base, the_repository->objects, &p->base);
+	read_mmblob(&local, the_repository->objects, &p->local);
+	read_mmblob(&remote, the_repository->objects, &p->remote);
 
 	status = ll_merge(&result_buf, oid_to_hex(&p->obj), &base, NULL,
 			  &local, o->local_ref, &remote, o->remote_ref,
@@ -668,11 +668,11 @@ int notes_merge(struct notes_merge_options *o,
 		commit_list_insert(local, &parents);
 		create_notes_commit(o->repo, local_tree, parents, o->commit_msg.buf,
 				    o->commit_msg.len, result_oid);
-		free_commit_list(parents);
+		commit_list_free(parents);
 	}
 
 found_result:
-	free_commit_list(bases);
+	commit_list_free(bases);
 	strbuf_release(&(o->commit_msg));
 	trace_printf("notes_merge(): result = %i, result_oid = %.7s\n",
 	       result, oid_to_hex(result_oid));

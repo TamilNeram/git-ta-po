@@ -16,7 +16,11 @@
 #include "system.h"
 #include "reftable-basics.h"
 
+#ifdef __GNUC__
 #define REFTABLE_UNUSED __attribute__((__unused__))
+#else
+#define REFTABLE_UNUSED
+#endif
 
 /*
  * Initialize the buffer such that it is ready for use. This is equivalent to
@@ -163,10 +167,11 @@ void free_names(char **a);
 
 /*
  * Parse a newline separated list of names. `size` is the length of the buffer,
- * without terminating '\0'. Empty names are discarded. Returns a `NULL`
- * pointer when allocations fail.
+ * without terminating '\0'. Empty names are discarded.
+ *
+ * Returns 0 on success, a reftable error code on error.
  */
-char **parse_names(char *buf, int size);
+int parse_names(char *buf, int size, char ***out);
 
 /* compares two NULL-terminated arrays of strings. */
 int names_equal(const char **a, const char **b);

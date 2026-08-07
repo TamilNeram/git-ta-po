@@ -96,6 +96,7 @@ struct sigaction {
 	unsigned sa_flags;
 };
 #define SA_RESTART 0
+#define SA_NOCLDSTOP 1
 
 struct itimerval {
 	struct timeval it_value, it_interval;
@@ -120,10 +121,6 @@ struct utsname {
  * trivial stubs
  */
 
-static inline int readlink(const char *path UNUSED, char *buf UNUSED, size_t bufsiz UNUSED)
-{ errno = ENOSYS; return -1; }
-static inline int symlink(const char *oldpath UNUSED, const char *newpath UNUSED)
-{ errno = ENOSYS; return -1; }
 static inline int fchmod(int fildes UNUSED, mode_t mode UNUSED)
 { errno = ENOSYS; return -1; }
 #ifndef __MINGW64_VERSION_MAJOR
@@ -196,6 +193,8 @@ int setitimer(int type, struct itimerval *in, struct itimerval *out);
 int sigaction(int sig, struct sigaction *in, struct sigaction *out);
 int link(const char *oldpath, const char *newpath);
 int uname(struct utsname *buf);
+int symlink(const char *target, const char *link);
+int readlink(const char *path, char *buf, size_t bufsiz);
 
 /*
  * replacements of existing functions
@@ -239,9 +238,6 @@ int mingw_chdir(const char *dirname);
 
 int mingw_chmod(const char *filename, int mode);
 #define chmod mingw_chmod
-
-char *mingw_mktemp(char *template);
-#define mktemp mingw_mktemp
 
 char *mingw_getcwd(char *pointer, int len);
 #define getcwd mingw_getcwd
